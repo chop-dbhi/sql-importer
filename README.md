@@ -1,6 +1,14 @@
 # SQL Importer
 
-Import a CSV file into Postgres with automatic column typing, table creation, and unique and not null constraints.
+Import a CSV file into Postgres with automatic column typing and table creation.
+
+Features:
+
+- Type inference for numbers, dates, datetimes, and booleans
+- Automatic table creation
+- Uniqueness and not null detection
+- Automatic decompressing of gzip and bzip2 files
+- Support for append instead of replace
 
 ## Install
 
