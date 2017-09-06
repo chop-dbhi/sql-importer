@@ -13,7 +13,7 @@ Features:
 ## Install
 
 ```
-go get github.com/chop-dbhi/sql-importer
+go get github.com/chop-dbhi/sql-importer/cmd/sql-importer
 ```
 
 ## Usage
