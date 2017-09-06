@@ -1,6 +1,6 @@
 IMAGE_NAME := dbhi/sql-importer
 PROG_NAME := sql-importer
-CMD_PATH := "."
+CMD_PATH := "./cmd/sql-importer"
 
 GIT_SHA := $(shell git log -1 --pretty=format:"%h" .)
 GIT_TAG := $(shell git describe --tags --exact-match . 2>/dev/null)

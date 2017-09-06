@@ -1,127 +1,108 @@
-package main
+package sqlimporter
 
 import (
 	"database/sql"
-	"flag"
+	"fmt"
 	"log"
-	"math/rand"
 	"path"
 	"strings"
-	"time"
 
 	"github.com/chop-dbhi/sql-importer/profile/csv"
 	"github.com/chop-dbhi/sql-importer/reader"
 )
 
-func init() {
-	rand.Seed(time.Now().UnixNano())
+type Request struct {
+	// Input path.
+	Path string
+
+	// Target database.
+	Database string
+	Schema   string
+	Table    string
+
+	// Behavior
+	AppendTable bool
+	CStore      bool
+
+	// File specifics.
+	CSV         bool
+	Compression string
+
+	// CSV
+	Delimiter string
+	Header    bool
 }
 
-func main() {
-	var (
-		dbUrl           string
-		schemaName      string
-		tableName       string
-		compressionType string
+func Import(r *Request) error {
+	fileType, fileComp := reader.DetectType(r.Path)
 
-		csvType      bool
-		csvDelimiter string
-		csvNoheader  bool
-
-		appendTable bool
-		useCstore   bool
-	)
-
-	flag.StringVar(&dbUrl, "db", "", "Database URL.")
-	flag.StringVar(&schemaName, "schema", "public", "Schema name.")
-	flag.StringVar(&tableName, "table", "", "Table name.")
-	flag.BoolVar(&csvType, "csv", true, "CSV file. Required if using stdin.")
-	flag.StringVar(&csvDelimiter, "csv.delim", ",", "CSV delimiter.")
-	flag.BoolVar(&csvNoheader, "csv.noheader", false, "No CSV header present.")
-	flag.StringVar(&compressionType, "compression", "", "Compression used.")
-	flag.BoolVar(&useCstore, "cstore", false, "Use cstore table.")
-	flag.BoolVar(&appendTable, "append", false, "Append to table.")
-
-	flag.Parse()
-	args := flag.Args()
-
-	var (
-		fileType string
-	)
-
-	// Input.
-	if len(args) == 0 {
-		log.Fatal("file name required")
-	}
-
-	inputName := args[0]
-	fileType, fileComp := reader.DetectType(inputName)
-
-	if csvType || fileType == "csv" {
-		csvType = true
+	if r.CSV || fileType == "csv" {
+		r.CSV = true
 	} else {
-		log.Fatal("file type not supported: %s", fileType)
+		return fmt.Errorf("file type not supported: %s", fileType)
 	}
 
-	if compressionType == "" {
-		compressionType = fileComp
+	if r.Compression == "" {
+		r.Compression = fileComp
 	}
 
-	if tableName == "" {
-		_, base := path.Split(inputName)
-		tableName = strings.Split(base, ".")[0]
+	if r.Table == "" {
+		_, base := path.Split(r.Path)
+		r.Table = strings.Split(base, ".")[0]
 	}
 
 	// Connect to database.
-	db, err := sql.Open("postgres", dbUrl)
+	db, err := sql.Open("postgres", r.Database)
 	if err != nil {
-		log.Fatalf("cannot open db connection: %s", err)
+		return fmt.Errorf("cannot open db connection: %s", err)
 	}
 	defer db.Close()
 
 	// Open the input stream.
-	input, err := reader.Open(inputName, compressionType)
+	input, err := reader.Open(r.Path, r.Compression)
 	if err != nil {
-		log.Fatal("cannot open input: %s", err)
+		return fmt.Errorf("cannot open input: %s", err)
 	}
 	defer input.Close()
 
 	cp := csv.NewProfiler(input)
-	cp.Delimiter = csvDelimiter[0]
-	cp.Header = !csvNoheader
+	cp.Delimiter = r.Delimiter[0]
+	cp.Header = r.Header
 
 	prof, err := cp.Profile()
 	if err != nil {
-		log.Fatalf("profile error: %s", err)
+		return fmt.Errorf("profile error: %s", err)
 	}
 
 	log.Print("Done profiling")
 
 	input.Close()
-	input, err = reader.Open(inputName, compressionType)
+	input, err = reader.Open(r.Path, r.Compression)
 	if err != nil {
-		log.Fatal("cannot open input: %s", err)
+		return fmt.Errorf("cannot open input: %s", err)
 	}
 	defer input.Close()
 
 	schema := NewSchema(prof)
-	if useCstore {
+	if r.CStore {
 		schema.Cstore = true
 	}
 
 	// Load intot he database.
-	log.Printf(`Begin load into "%s"."%s"`, schemaName, tableName)
+	log.Printf(`Begin load into "%s"."%s"`, r.Schema, r.Table)
 
 	var n int64
 	dbc := New(db)
-	if appendTable {
-		n, err = dbc.Append(schemaName, tableName, schema, input)
+	if r.AppendTable {
+		n, err = dbc.Append(r.Schema, r.Table, schema, input)
 	} else {
-		n, err = dbc.Replace(schemaName, tableName, schema, input)
+		n, err = dbc.Replace(r.Schema, r.Table, schema, input)
 	}
 	if err != nil {
-		log.Fatalf("error loading: %s", err)
+		return fmt.Errorf("error loading: %s", err)
 	}
 
 	log.Printf("Loaded %d records", n)
+
+	return nil
 }
