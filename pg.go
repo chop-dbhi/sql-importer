@@ -23,6 +23,7 @@ var (
 	sqlTmpl = template.New("sql")
 
 	queryTmpls = map[string]string{
+		"createSchema":      `create schema if not exists "{{.Schema}}"`,
 		"createTable":       `create table if not exists "{{.Schema}}"."{{.Table}}" ( {{.Columns}} )`,
 		"createCstoreTable": `create foreign table if not exists "{{.Schema}}"."{{.Table}}" ( {{.Columns}} ) server cstore_server options (compression 'pglz')`,
 		"dropTable":         `drop table if exists "{{.Schema}}"."{{.Table}}"`,
@@ -130,6 +131,10 @@ func (c *Client) execTx(fn func(tx *sql.Tx) error) error {
 func (c *Client) Replace(schemaName, tableName string, tableSchema *Schema, data io.Reader) (int64, error) {
 	tempTableName := uuid.NewV4().String()
 
+	if err := c.createSchema(schemaName); err != nil {
+		return 0, err
+	}
+
 	if err := c.createTable(schemaName, tempTableName, tableSchema); err != nil {
 		return 0, err
 	}
@@ -147,6 +152,10 @@ func (c *Client) Replace(schemaName, tableName string, tableSchema *Schema, data
 }
 
 func (c *Client) Append(schemaName, tableName string, tableSchema *Schema, data io.Reader) (int64, error) {
+	if err := c.createSchema(schemaName); err != nil {
+		return 0, err
+	}
+
 	if err := c.createTable(schemaName, tableName, tableSchema); err != nil {
 		return 0, err
 	}
@@ -157,6 +166,28 @@ func (c *Client) Append(schemaName, tableName string, tableSchema *Schema, data 
 	}
 
 	return n, c.analyzeTable(schemaName, tableName)
+}
+
+func (c *Client) createSchema(schemaName string) error {
+	// Create the set of statements to
+	data := &tableData{
+		Schema: schemaName,
+	}
+
+	var b bytes.Buffer
+	if err := sqlTmpl.ExecuteTemplate(&b, "createSchema", data); err != nil {
+		return err
+	}
+
+	return c.execTx(func(tx *sql.Tx) error {
+		sql := b.String()
+		_, err := tx.Exec(sql)
+		if err != nil {
+			return fmt.Errorf("error creating schema: %s\n%s", err, sql)
+		}
+
+		return nil
+	})
 }
 
 func (c *Client) createTable(schemaName, tableName string, tableSchema *Schema) error {
