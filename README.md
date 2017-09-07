@@ -21,7 +21,7 @@ go get github.com/chop-dbhi/sql-importer/cmd/sql-importer
 Specify the database URL and a CSV file to import. The table name will be derived from the filename by default.
 
 ```
-sql-importer -db 127.0.0.1:5432/postgres data.csv
+sql-importer -db postgres://127.0.0.1:5432/postgres data.csv
 ```
 
 See other options by running `sql-importer -h`.
