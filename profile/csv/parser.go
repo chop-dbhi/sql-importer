@@ -6,6 +6,11 @@ import (
 	"io"
 )
 
+const (
+	// 8 times default scanner buffer size.
+	scanBufSize = 8 * 64 * 1024
+)
+
 var (
 	csvErrUnquotedField     = errors.New("unquoted field")
 	csvErrUnescapedQuote    = errors.New("bare quote")
@@ -63,6 +68,8 @@ func NewCSVReader(r io.Reader, sep byte) *CSVReader {
 		sep: sep,
 		eor: true,
 	}
+
+	s.sc.Buffer(nil, scanBufSize)
 
 	return s
 }
