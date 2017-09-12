@@ -373,9 +373,8 @@ func (c *Client) createTable(schemaName, tableName string, tableSchema *Schema) 
 	}
 
 	partSizes := []int{
-		1600, // max postgres columns
-		925,
-		250, // max for certain types
+		924,
+		249, // max for certain types
 	}
 
 	for _, size := range partSizes {
