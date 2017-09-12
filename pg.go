@@ -16,7 +16,12 @@ import (
 	uuid "github.com/satori/go.uuid"
 )
 
-const rowIdColumn = "_row_id"
+const (
+	rowIdColumn = "_row_id"
+
+	// Maximum number of entries in a "target list" (e.g. column list).
+	pgMaxTargetListSize = 1664
+)
 
 var (
 	badChars *regexp.Regexp
@@ -197,7 +202,8 @@ func (c *Client) Replace(schemaName, tableName string, tableSchema *Schema, data
 		return n, err
 	}
 
-	if len(splits) > 1 {
+	// Create a view if necessary and possible.
+	if len(splits) > 1 && len(tableSchema.Fields)+len(splits) <= pgMaxTargetListSize {
 		if err := c.createView(schemaName, tableName, tableName, splits); err != nil {
 			return n, err
 		}
