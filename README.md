@@ -9,8 +9,14 @@ Features:
 - Uniqueness and not null detection
 - Automatic decompressing of gzip and bzip2 files
 - Support for append instead of replace
+- Support for CSV files wider than 1600 columns (the Postgres limit)
 
 ## Install
+
+[Download a pre-built release](https://github.com/chop-dbhi/sql-importer/releases).
+
+
+Or install it from source (requires Go).
 
 ```
 go get github.com/chop-dbhi/sql-importer/cmd/sql-importer
