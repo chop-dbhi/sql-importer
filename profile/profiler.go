@@ -158,11 +158,13 @@ type profilerField struct {
 
 func (p *profilerField) Field() *Field {
 	_, nullable := p.Types[NullType]
+	_, missing := p.Values[""]
 
 	f := Field{
 		Name:         p.Name,
 		Type:         p.Type(),
 		Nullable:     nullable,
+		Missing:      missing,
 		Unique:       p.Unique,
 		LeadingZeros: p.LeadingZeros,
 	}

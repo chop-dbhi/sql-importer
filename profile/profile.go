@@ -15,6 +15,9 @@ type Field struct {
 	// True if the field contains null values.
 	Nullable bool `json:"nullable"`
 
+	// True if the field contains empty strings.
+	Missing bool `json:"missing"`
+
 	// True if all values are unique.
 	Unique bool `json:"unique"`
 
