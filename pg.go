@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
-	"sort"
 	"strings"
 	"text/template"
 
@@ -15,6 +15,8 @@ import (
 	"github.com/lib/pq"
 	uuid "github.com/satori/go.uuid"
 )
+
+const rowIdColumn = "_row_id"
 
 var (
 	badChars *regexp.Regexp
@@ -25,10 +27,24 @@ var (
 	queryTmpls = map[string]string{
 		"createSchema":      `create schema if not exists "{{.Schema}}"`,
 		"createTable":       `create table if not exists "{{.Schema}}"."{{.Table}}" ( {{.Columns}} )`,
+		"createView":        `create or replace view "{{.Schema}}"."{{.View}}" as select {{.Columns}} from "{{.Schema}}"."{{.Table}}" {{.Joins}}`,
 		"createCstoreTable": `create foreign table if not exists "{{.Schema}}"."{{.Table}}" ( {{.Columns}} ) server cstore_server options (compression 'pglz')`,
 		"dropTable":         `drop table if exists "{{.Schema}}"."{{.Table}}"`,
+		"dropView":          `drop view if exists "{{.Schema}}"."{{.View}}"`,
 		"renameTable":       `alter table "{{.Schema}}"."{{.TempTable}}" rename to "{{.Table}}"`,
 		"analyzeTable":      `analyze "{{.Schema}}"."{{.Table}}"`,
+	}
+
+	// Map of revue types to SQL types.
+	sqlTypeMap = map[profile.ValueType]string{
+		profile.UnknownType:  "integer",
+		profile.BoolType:     "boolean",
+		profile.StringType:   "text",
+		profile.IntType:      "integer",
+		profile.FloatType:    "real",
+		profile.DateType:     "date",
+		profile.DateTimeType: "timestamp",
+		profile.NullType:     "text",
 	}
 )
 
@@ -42,32 +58,64 @@ func init() {
 	sepChars = regexp.MustCompile(`[_\-\.\+]+`)
 }
 
-// Map of revue types to SQL types.
-var sqlTypeMap = map[profile.ValueType]string{
-	profile.UnknownType:  "integer",
-	profile.BoolType:     "boolean",
-	profile.StringType:   "text",
-	profile.IntType:      "integer",
-	profile.FloatType:    "real",
-	profile.DateType:     "date",
-	profile.DateTimeType: "timestamp",
-	profile.NullType:     "text",
+func splitN(l, n int) (int, int) {
+	if n > l {
+		return 1, 0
+	}
+
+	// Parts.
+	p := l / n
+
+	// Remainder.
+	r := l % n
+
+	return p, r
+}
+
+func splitColumns(columns []string, n int) [][]string {
+	l := len(columns)
+	if n >= l {
+		return [][]string{columns}
+	}
+
+	// Split columns.
+	p, r := splitN(l, n)
+
+	var hi, low int
+	var colparts [][]string
+
+	for i := 0; i < p; i++ {
+		low = i * n
+		hi = low + n
+		var cp []string
+		cp = append(cp, columns[low:hi]...)
+		colparts = append(colparts, cp)
+	}
+
+	// Remainder, add another part.
+	if r > 0 {
+		var cp []string
+		cp = append(cp, columns[hi:]...)
+		colparts = append(colparts, cp)
+	}
+
+	return colparts
 }
 
 type Schema struct {
 	Cstore bool
-	Fields map[string]*Field `json:"fields"`
+	Fields []*Field
 }
 
 func NewSchema(p *profile.Profile) *Schema {
-	fields := make(map[string]*Field, len(p.Fields))
+	fields := make([]*Field, len(p.Fields))
 
 	for n, f := range p.Fields {
-		fields[n] = &Field{
+		fields[f.Index] = &Field{
 			Name:     n,
 			Type:     sqlTypeMap[f.Type],
 			Unique:   f.Unique,
-			Nullable: f.Nullable,
+			Nullable: f.Nullable || f.Missing,
 		}
 	}
 
@@ -78,28 +126,20 @@ func NewSchema(p *profile.Profile) *Schema {
 
 // Field is a data definition on a schema.
 type Field struct {
-	// Name is the unique name of the field with respect to the schema.
-	Name string `json:"name"`
-
-	// Type is the data type of the values that can be assigned to
-	// this field.
-	Type string `json:"type"`
-
-	// If true, this value supports multiple values.
-	Multiple bool `json:"multiple"`
-
-	// If true, values across a set of records are expected to be unique.
-	Unique bool `json:"unique"`
-
-	// If true, values can be "null", that is, not specified.
-	Nullable bool `json:"nullable"`
+	Name     string
+	Type     string
+	Multiple bool
+	Unique   bool
+	Nullable bool
 }
 
 type tableData struct {
 	Schema    string
 	TempTable string
 	Table     string
+	View      string
 	Columns   string
+	Joins     string
 }
 
 // TODO: fuzz test this.
@@ -135,20 +175,35 @@ func (c *Client) Replace(schemaName, tableName string, tableSchema *Schema, data
 		return 0, err
 	}
 
-	if err := c.createTable(schemaName, tempTableName, tableSchema); err != nil {
-		return 0, err
-	}
-
-	n, err := c.copyData(schemaName, tempTableName, data)
+	splits, err := c.createTable(schemaName, tempTableName, tableSchema)
 	if err != nil {
 		return 0, err
 	}
 
-	if err := c.renameTable(schemaName, tempTableName, tableName); err != nil {
+	n, err := c.copyData(schemaName, tempTableName, splits, data)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := c.dropView(schemaName, tableName); err != nil {
 		return n, err
 	}
 
-	return n, c.analyzeTable(schemaName, tableName)
+	if err := c.dropTable(schemaName, tableName); err != nil {
+		return n, err
+	}
+
+	if err := c.renameTable(schemaName, tempTableName, tableName, len(splits)); err != nil {
+		return n, err
+	}
+
+	if len(splits) > 1 {
+		if err := c.createView(schemaName, tableName, tableName, splits); err != nil {
+			return n, err
+		}
+	}
+
+	return n, c.analyzeTable(schemaName, tableName, splits)
 }
 
 func (c *Client) Append(schemaName, tableName string, tableSchema *Schema, data io.Reader) (int64, error) {
@@ -156,16 +211,63 @@ func (c *Client) Append(schemaName, tableName string, tableSchema *Schema, data 
 		return 0, err
 	}
 
-	if err := c.createTable(schemaName, tableName, tableSchema); err != nil {
-		return 0, err
-	}
-
-	n, err := c.copyData(schemaName, tableName, data)
+	splits, err := c.createTable(schemaName, tableName, tableSchema)
 	if err != nil {
 		return 0, err
 	}
 
-	return n, c.analyzeTable(schemaName, tableName)
+	n, err := c.copyData(schemaName, tableName, splits, data)
+	if err != nil {
+		return 0, err
+	}
+
+	return n, c.analyzeTable(schemaName, tableName, splits)
+}
+
+func (c *Client) dropView(schemaName, viewName string) error {
+	// Create the set of statements to
+	data := &tableData{
+		Schema: schemaName,
+		View:   viewName,
+	}
+
+	var b bytes.Buffer
+	if err := sqlTmpl.ExecuteTemplate(&b, "dropView", data); err != nil {
+		return err
+	}
+
+	return c.execTx(func(tx *sql.Tx) error {
+		sql := b.String()
+		_, err := tx.Exec(sql)
+		if err != nil {
+			return fmt.Errorf("error dropping view: %s\n%s", err, sql)
+		}
+
+		return nil
+	})
+}
+
+func (c *Client) dropTable(schemaName, tableName string) error {
+	// Create the set of statements to
+	data := &tableData{
+		Schema: schemaName,
+		Table:  tableName,
+	}
+
+	var b bytes.Buffer
+	if err := sqlTmpl.ExecuteTemplate(&b, "dropTable", data); err != nil {
+		return err
+	}
+
+	return c.execTx(func(tx *sql.Tx) error {
+		sql := b.String()
+		_, err := tx.Exec(sql)
+		if err != nil {
+			return fmt.Errorf("error dropping table: %s\n%s", err, sql)
+		}
+
+		return nil
+	})
 }
 
 func (c *Client) createSchema(schemaName string) error {
@@ -190,10 +292,69 @@ func (c *Client) createSchema(schemaName string) error {
 	})
 }
 
-func (c *Client) createTable(schemaName, tableName string, tableSchema *Schema) error {
-	var columns []string
+func (c *Client) createView(schemaName, viewName string, tableName string, tableColumns [][]string) error {
+	var (
+		firstTable    string
+		rightTable    string
+		leftTable     string
+		selectColumns []string
+		joins         []string
+	)
+
+	for i, cols := range tableColumns {
+		rightTable = fmt.Sprintf("%s_%d", tableName, i)
+
+		if firstTable == "" {
+			firstTable = rightTable
+		}
+
+		// Add columns to select statement.
+		for _, col := range cols {
+			selectColumns = append(selectColumns, fmt.Sprintf(`"%s"."%s"."%s"`, schemaName, rightTable, col))
+		}
+
+		if leftTable != "" {
+			joins = append(joins, fmt.Sprintf(`inner join "%s"."%s" on ("%s"."%s"."%s" = "%s"."%s"."%s")`, schemaName, rightTable, schemaName, leftTable, rowIdColumn, schemaName, rightTable, rowIdColumn))
+		}
+
+		leftTable = rightTable
+	}
+
+	data := &tableData{
+		Table:   firstTable,
+		View:    viewName,
+		Schema:  schemaName,
+		Columns: strings.Join(selectColumns, ", "),
+		Joins:   strings.Join(joins, " "),
+	}
+
+	var b bytes.Buffer
+	if err := sqlTmpl.ExecuteTemplate(&b, "createView", data); err != nil {
+		return err
+	}
+
+	return c.execTx(func(tx *sql.Tx) error {
+		sql := b.String()
+		_, err := tx.Exec(sql)
+		if err != nil {
+			return fmt.Errorf("error creating view: %s\n%s", err, sql)
+		}
+
+		return nil
+	})
+}
+
+func (c *Client) createTable(schemaName, tableName string, tableSchema *Schema) ([][]string, error) {
+	var (
+		columns       []string
+		columnSchemas []string
+	)
 
 	for _, f := range tableSchema.Fields {
+		// Cleaned column name.
+		name := cleanFieldName(f.Name)
+		columns = append(columns, name)
+
 		var col string
 
 		// Create index.
@@ -205,12 +366,69 @@ func (c *Client) createTable(schemaName, tableName string, tableSchema *Schema) 
 			col = "%s %s"
 		}
 
-		name := cleanFieldName(f.Name)
-		columns = append(columns, fmt.Sprintf(col, pq.QuoteIdentifier(name), f.Type))
+		columnSchemas = append(columnSchemas, fmt.Sprintf(col, pq.QuoteIdentifier(name), f.Type))
 	}
 
-	sort.Strings(columns)
+	partSizes := []int{
+		1600, // max postgres columns
+		925,
+		250, // max for certain types
+	}
 
+	for _, size := range partSizes {
+		columnSplits := splitColumns(columns, size)
+		columnSchemaSplits := splitColumns(columnSchemas, size)
+
+		err := c.createTableSplits(schemaName, tableName, columnSchemaSplits, tableSchema.Cstore)
+
+		// Success.
+		if err == nil {
+			return columnSplits, nil
+		}
+
+		if !strings.Contains(err.Error(), "pq: tables can have at most 1600 columns") {
+			return nil, err
+		}
+	}
+
+	return nil, errors.New("failed to partition columns")
+}
+
+func (c *Client) createTableSplits(schemaName, tableName string, splitColumns [][]string, cstore bool) error {
+	// All columns fit in the table.
+	if len(splitColumns) == 1 {
+		return c.execTx(func(tx *sql.Tx) error {
+			return c.createSingleTable(tx, schemaName, tableName, splitColumns[0], cstore)
+		})
+	}
+
+	return c.execTx(func(tx *sql.Tx) error {
+		var partTables []string
+
+		// Multiple tables, so we need to add the rowIdColumn.
+		// A suffix is added to each table name. Then a view is created
+		// to join the tables to together.
+		for i, cols := range splitColumns {
+			partTableName := fmt.Sprintf("%s_%d", tableName, i)
+
+			ncols := []string{
+				rowIdColumn + " integer not null unique",
+			}
+			ncols = append(ncols, cols...)
+
+			// TODO: clean up partially created tables?
+			if err := c.createSingleTable(tx, schemaName, partTableName, ncols, cstore); err != nil {
+				return err
+			}
+
+			partTables = append(partTables, partTableName)
+		}
+
+		return nil
+	})
+}
+
+func (c *Client) createSingleTable(tx *sql.Tx, schemaName, tableName string, columns []string, cstore bool) error {
 	// Create the set of statements to
 	data := &tableData{
 		Schema:  schemaName,
@@ -218,27 +436,27 @@ func (c *Client) createTable(schemaName, tableName string, tableSchema *Schema) 
 		Columns: strings.Join(columns, ","),
 	}
 
-	return c.execTx(func(tx *sql.Tx) error {
-		tmplName := "createTable"
-		if tableSchema.Cstore {
-			tmplName = "createCstoreTable"
-		}
+	tmplName := "createTable"
+	if cstore {
+		tmplName = "createCstoreTable"
+	}
 
-		var b bytes.Buffer
-		if err := sqlTmpl.ExecuteTemplate(&b, tmplName, data); err != nil {
-			return err
-		}
+	var b bytes.Buffer
+	if err := sqlTmpl.ExecuteTemplate(&b, tmplName, data); err != nil {
+		return err
+	}
 
-		sql := b.String()
-		if _, err := tx.Exec(sql); err != nil {
-			return fmt.Errorf("error creating table: %s\n%s", err, sql)
-		}
-
-		return nil
-	})
+	sql := b.String()
+	_, err := tx.Exec(sql)
+	if err != nil {
+		return fmt.Errorf("error creating table: %s\n%s", err, sql)
+	}
+	return err
 }
 
-func (c *Client) renameTable(schemaName, tempTableName, tableName string) error {
+func (c *Client) renameSingleTable(tx *sql.Tx, schemaName, tempTableName, tableName string) error {
+	var b bytes.Buffer
+
 	// Create the set of statements to
 	data := &tableData{
 		Schema:    schemaName,
@@ -251,79 +469,142 @@ func (c *Client) renameTable(schemaName, tempTableName, tableName string) error 
 		"renameTable",
 	}
 
-	var b bytes.Buffer
-
-	return c.execTx(func(tx *sql.Tx) error {
-		for _, name := range tmpls {
-			b.Reset()
-			if err := sqlTmpl.ExecuteTemplate(&b, name, data); err != nil {
-				return err
-			}
-
-			if _, err := tx.Exec(b.String()); err != nil {
-				return fmt.Errorf("error renaming table: %s", err)
-			}
-		}
-
-		return nil
-	})
-}
-
-func (c *Client) analyzeTable(schemaName, tableName string) error {
-	return c.execTx(func(tx *sql.Tx) error {
-		// Create the set of statements to
-		data := &tableData{
-			Schema: schemaName,
-			Table:  tableName,
-		}
-
-		var b bytes.Buffer
-		if err := sqlTmpl.ExecuteTemplate(&b, "analyzeTable", data); err != nil {
+	for _, name := range tmpls {
+		b.Reset()
+		if err := sqlTmpl.ExecuteTemplate(&b, name, data); err != nil {
 			return err
 		}
 
-		sql := b.String()
-		if _, err := tx.Exec(sql); err != nil {
-			return fmt.Errorf("error analyzinng table: %s\n%s", err, sql)
+		if _, err := tx.Exec(b.String()); err != nil {
+			return fmt.Errorf("error renaming table: %s", err)
+		}
+	}
+
+	return nil
+}
+
+func (c *Client) renameTable(schemaName, tempTableName, tableName string, tableParts int) error {
+	if tableParts == 1 {
+		return c.execTx(func(tx *sql.Tx) error {
+			return c.renameSingleTable(tx, schemaName, tempTableName, tableName)
+		})
+	}
+
+	return c.execTx(func(tx *sql.Tx) error {
+		for i := 0; i < tableParts; i++ {
+			if err := c.renameSingleTable(tx, schemaName, fmt.Sprintf("%s_%d", tempTableName, i), fmt.Sprintf("%s_%d", tableName, i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (c *Client) analyzeTable(schemaName, tableName string, tableColumns [][]string) error {
+	if len(tableColumns) == 1 {
+		return c.execTx(func(tx *sql.Tx) error {
+			return c.analyzeSingleTable(tx, schemaName, tableName)
+		})
+	}
+
+	return c.execTx(func(tx *sql.Tx) error {
+		for i := range tableColumns {
+			if err := c.analyzeSingleTable(tx, schemaName, fmt.Sprintf("%s_%d", tableName, i)); err != nil {
+				return err
+			}
 		}
 
 		return nil
 	})
 }
 
-func (c *Client) copyData(schemaName, tableName string, in io.Reader) (int64, error) {
+func (c *Client) analyzeSingleTable(tx *sql.Tx, schemaName, tableName string) error {
+	// Create the set of statements to
+	data := &tableData{
+		Schema: schemaName,
+		Table:  tableName,
+	}
+
+	var b bytes.Buffer
+	if err := sqlTmpl.ExecuteTemplate(&b, "analyzeTable", data); err != nil {
+		return err
+	}
+
+	sql := b.String()
+	if _, err := tx.Exec(sql); err != nil {
+		return fmt.Errorf("error analyzinng table: %s\n%s", err, sql)
+	}
+
+	return nil
+}
+
+func (c *Client) copyData(schemaName, tableName string, tableColumns [][]string, in io.Reader) (int64, error) {
 	cr := csv.NewReader(in)
 
-	columns, err := cr.Read()
+	// Read and skip columns.
+	_, err := cr.Read()
 	if err != nil {
 		return 0, err
 	}
 
-	for i, c := range columns {
-		columns[i] = cleanFieldName(c)
-	}
+	singleTable := len(tableColumns) == 1
+	singleTableSize := len(tableColumns[0])
 
-	var n int64
+	txs := make([]*sql.Tx, len(tableColumns))
+	stmts := make([]*sql.Stmt, len(tableColumns))
 
-	err = c.execTx(func(tx *sql.Tx) error {
-		stmt, err := tx.Prepare(pq.CopyInSchema(schemaName, tableName, columns...))
+	defer func() {
+		for i := range txs {
+			stmts[i].Close()
+			txs[i].Rollback()
+		}
+	}()
+
+	for i, cols := range tableColumns {
+		tx, err := c.db.Begin()
 		if err != nil {
-			return fmt.Errorf("error preparing copy: %s", err)
+			return 0, err
 		}
 
-		cargs := make([]interface{}, len(columns))
+		txs[i] = tx
 
-		// Buffer records for COPY statement.
-		for {
-			row, err := cr.Read()
-			if err == io.EOF {
-				break
-			}
+		targetTable := tableName
+		if !singleTable {
+			cols = append([]string{rowIdColumn}, cols...)
+			targetTable = fmt.Sprintf("%s_%d", tableName, i)
+		}
 
-			if err != nil {
-				return fmt.Errorf("error reading record: %s", err)
-			}
+		stmt, err := tx.Prepare(pq.CopyInSchema(schemaName, targetTable, cols...))
+		if err != nil {
+			return 0, fmt.Errorf("error preparing copy: %s", err)
+		}
 
+		stmts[i] = stmt
+	}
+
+	// Allocate buffer. Max width + 1 for row id.
+	// The actual bounds will need to be maintained.
+	cargs := make([]interface{}, len(tableColumns[0])+1)
+
+	var (
+		n     int64
+		rowid int64
+	)
+
+	// Buffer records for COPY statement.
+	for {
+		row, err := cr.Read()
+		if err == io.EOF {
+			break
+		}
+
+		if err != nil {
+			return 0, fmt.Errorf("error reading record: %s", err)
+		}
+
+		rowid++
+
+		if singleTable {
 			for i, v := range row {
 				if v == "" {
 					cargs[i] = nil
@@ -332,25 +613,55 @@ func (c *Client) copyData(schemaName, tableName string, in io.Reader) (int64, er
 				}
 			}
 
-			_, err = stmt.Exec(cargs...)
+			_, err = stmts[0].Exec(cargs[:singleTableSize]...)
 			if err != nil {
-				return fmt.Errorf("error sending row: %s", err)
+				return 0, fmt.Errorf("error sending row: %s", err)
 			}
+		} else {
+			var low, hi int
 
-			n++
+			for i, cols := range tableColumns {
+				hi = low + len(cols)
+
+				cargs[0] = rowid
+
+				for j, v := range row[low:hi] {
+					if v == "" {
+						cargs[j+1] = nil
+					} else {
+						cargs[j+1] = v
+					}
+				}
+
+				low = hi
+
+				_, err = stmts[i].Exec(cargs[:len(cols)+1]...)
+				if err != nil {
+					return 0, fmt.Errorf("error sending row: %s: %v, %v", err, cols, cargs[:len(cols)+1])
+				}
+			}
 		}
 
-		// Empty exec to flush the buffer.
+		n++
+	}
+
+	// Empty exec to flush the buffer.
+	for _, stmt := range stmts {
 		_, err = stmt.Exec()
 		if err != nil {
-			return fmt.Errorf("error executing copy: %s", err)
+			return 0, fmt.Errorf("error executing copy: %s", err)
 		}
-
-		return nil
-	})
+	}
 
 	if err != nil {
 		return 0, err
+	}
+
+	// Commit transactions.
+	for _, tx := range txs {
+		if err := tx.Commit(); err != nil {
+			return 0, err
+		}
 	}
 
 	return n, nil
