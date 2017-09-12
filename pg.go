@@ -358,7 +358,10 @@ func (c *Client) createTable(schemaName, tableName string, tableSchema *Schema) 
 		var col string
 
 		// Create index.
-		if f.Unique {
+		// TODO: long text values cannot be indexed.
+		// https://dba.stackexchange.com/questions/25138/index-max-row-size-error.
+		// Should this check the max value length?
+		if f.Unique && f.Type != "text" {
 			col = "%s %s unique"
 		} else if !f.Nullable {
 			col = "%s %s not null"
