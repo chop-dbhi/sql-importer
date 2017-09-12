@@ -378,8 +378,11 @@ func (c *Client) createTable(schemaName, tableName string, tableSchema *Schema) 
 		columnSchemas = append(columnSchemas, fmt.Sprintf(col, pq.QuoteIdentifier(name), f.Type))
 	}
 
+	// 250 - 1600 is max number of columns allowed per table, but this depends
+	// on the data types used. this strategy simply attempts to create the widest
+	// table it can.
 	partSizes := []int{
-		924,
+		1299,
 		249, // max for certain types
 	}
 
