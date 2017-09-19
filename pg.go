@@ -60,7 +60,7 @@ func init() {
 	}
 
 	badChars = regexp.MustCompile(`[^a-z0-9_\-\.\+]+`)
-	sepChars = regexp.MustCompile(`[_\-\.\+]+`)
+	sepChars = regexp.MustCompile(`[\-\.\+]+`)
 }
 
 func splitN(l, n int) (int, int) {
