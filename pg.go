@@ -190,13 +190,8 @@ func (c *Client) Replace(schemaName, tableName string, tableSchema *Schema, data
 		return 0, err
 	}
 
-	if err := c.dropView(schemaName, tableName); err != nil {
-		return n, err
-	}
-
-	if err := c.dropTable(schemaName, tableName); err != nil {
-		return n, err
-	}
+	c.dropView(schemaName, tableName)
+	c.dropTable(schemaName, tableName)
 
 	if err := c.renameTable(schemaName, tempTableName, tableName, len(splits)); err != nil {
 		return n, err
