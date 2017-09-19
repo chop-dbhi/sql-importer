@@ -37,6 +37,10 @@ func (x *Profiler) Profile() (*profile.Profile, error) {
 		}
 	}
 
+	for _, c := range header {
+		p.InitField(c)
+	}
+
 	// Profile first record.
 	if !x.Header {
 		for i, field := range header {

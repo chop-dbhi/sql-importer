@@ -25,6 +25,8 @@ type Profiler interface {
 	// Increment the record count.
 	Incr()
 
+	InitField(name string)
+
 	// Record records a field-value pair to the profile of an unknown type.
 	// The value must be a encoded as a string and will be parsed in a variety
 	// of ways to detect the type.
@@ -71,6 +73,10 @@ func (p *profiler) field(n string) (*profilerField, bool) {
 	}
 
 	return f, true
+}
+
+func (p *profiler) InitField(name string) {
+	p.field(name)
 }
 
 func (p *profiler) Profile() *Profile {
