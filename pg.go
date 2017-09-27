@@ -173,7 +173,7 @@ func (c *Client) execTx(fn func(tx *sql.Tx) error) error {
 	return tx.Commit()
 }
 
-func (c *Client) Replace(schemaName, tableName string, tableSchema *Schema, data io.Reader) (int64, error) {
+func (c *Client) Replace(schemaName, tableName string, tableSchema *Schema, cr *csv.Reader) (int64, error) {
 	tempTableName := uuid.NewV4().String()
 
 	if err := c.createSchema(schemaName); err != nil {
@@ -185,7 +185,7 @@ func (c *Client) Replace(schemaName, tableName string, tableSchema *Schema, data
 		return 0, err
 	}
 
-	n, err := c.copyData(schemaName, tempTableName, splits, data)
+	n, err := c.copyData(schemaName, tempTableName, splits, cr)
 	if err != nil {
 		return 0, err
 	}
@@ -207,7 +207,7 @@ func (c *Client) Replace(schemaName, tableName string, tableSchema *Schema, data
 	return n, c.analyzeTable(schemaName, tableName, splits)
 }
 
-func (c *Client) Append(schemaName, tableName string, tableSchema *Schema, data io.Reader) (int64, error) {
+func (c *Client) Append(schemaName, tableName string, tableSchema *Schema, cr *csv.Reader) (int64, error) {
 	if err := c.createSchema(schemaName); err != nil {
 		return 0, err
 	}
@@ -217,7 +217,7 @@ func (c *Client) Append(schemaName, tableName string, tableSchema *Schema, data 
 		return 0, err
 	}
 
-	n, err := c.copyData(schemaName, tableName, splits, data)
+	n, err := c.copyData(schemaName, tableName, splits, cr)
 	if err != nil {
 		return 0, err
 	}
@@ -544,9 +544,7 @@ func (c *Client) analyzeSingleTable(tx *sql.Tx, schemaName, tableName string) er
 	return nil
 }
 
-func (c *Client) copyData(schemaName, tableName string, tableColumns [][]string, in io.Reader) (int64, error) {
-	cr := csv.NewReader(in)
-
+func (c *Client) copyData(schemaName, tableName string, tableColumns [][]string, cr *csv.Reader) (int64, error) {
 	// Read and skip columns.
 	_, err := cr.Read()
 	if err != nil {

@@ -2,6 +2,7 @@ package sqlimporter
 
 import (
 	"database/sql"
+	libcsv "encoding/csv"
 	"fmt"
 	"log"
 	"path"
@@ -91,12 +92,15 @@ func Import(r *Request) error {
 	// Load intot he database.
 	log.Printf(`Begin load into "%s"."%s"`, r.Schema, r.Table)
 
+	cr := libcsv.NewReader(input)
+	cr.Comma = rune(r.Delimiter[0])
+
 	var n int64
 	dbc := New(db)
 	if r.AppendTable {
-		n, err = dbc.Append(r.Schema, r.Table, schema, input)
+		n, err = dbc.Append(r.Schema, r.Table, schema, cr)
 	} else {
-		n, err = dbc.Replace(r.Schema, r.Table, schema, input)
+		n, err = dbc.Replace(r.Schema, r.Table, schema, cr)
 	}
 	if err != nil {
 		return fmt.Errorf("error loading: %s", err)
