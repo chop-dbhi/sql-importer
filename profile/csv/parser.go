@@ -289,7 +289,7 @@ func (s *CSVReader) scanField(data []byte) (int, []byte, bool, error) {
 				oq = true
 			}
 
-			// End of field with a trailing comma.
+			// End of field with a trailing separator.
 			if pc == '"' && c == s.sep {
 				return i + 1, unescapeQuotes(data[1:i-1], eq), true, nil
 			}
