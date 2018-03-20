@@ -175,6 +175,7 @@ func (c *Client) execTx(fn func(tx *sql.Tx) error) error {
 
 func (c *Client) Replace(schemaName, tableName string, tableSchema *Schema, cr *csv.Reader) (int64, error) {
 	tempTableName := uuid.NewV4().String()
+	defer c.dropTable(schemaName, tempTableName)
 
 	if err := c.createSchema(schemaName); err != nil {
 		return 0, err
