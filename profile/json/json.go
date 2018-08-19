@@ -7,8 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/chop-dbhi/revue"
-	"github.com/chop-dbhi/revue/profile"
+	"github.com/chop-dbhi/sql-importer/profile"
 )
 
 type analyzer struct {
@@ -20,7 +19,7 @@ func (a *analyzer) parseField(path, field string, value interface{}) {
 
 	switch x := value.(type) {
 	case nil:
-		a.p.RecordType(fp, nil, revue.NullType)
+		a.p.RecordType(fp, nil, profile.NullType)
 
 	// Nested object.
 	case map[string]interface{}:
@@ -33,26 +32,26 @@ func (a *analyzer) parseField(path, field string, value interface{}) {
 		}
 
 	case bool:
-		a.p.RecordType(fp, x, revue.BoolType)
+		a.p.RecordType(fp, x, profile.BoolType)
 
 	case string:
-		var t revue.ValueType
+		var t profile.ValueType
 
 		if _, ok := profile.ParseDate(x); ok {
-			t = revue.DateType
+			t = profile.DateType
 		} else if _, ok := profile.ParseDateTime(x); ok {
-			t = revue.DateTimeType
+			t = profile.DateTimeType
 		} else {
-			t = revue.StringType
+			t = profile.StringType
 		}
 
 		a.p.RecordType(fp, x, t)
 
 	case json.Number:
 		if v, err := x.Int64(); err == nil {
-			a.p.RecordType(fp, v, revue.IntType)
+			a.p.RecordType(fp, v, profile.IntType)
 		} else if v, err := x.Float64(); err == nil {
-			a.p.RecordType(fp, v, revue.FloatType)
+			a.p.RecordType(fp, v, profile.FloatType)
 		} else {
 			panic("could not parse JSON number")
 		}

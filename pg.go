@@ -40,7 +40,7 @@ var (
 		"analyzeTable":      `analyze "{{.Schema}}"."{{.Table}}"`,
 	}
 
-	// Map of revue types to SQL types.
+	// Map of profile types to SQL types.
 	sqlTypeMap = map[profile.ValueType]string{
 		profile.UnknownType:  "integer",
 		profile.BoolType:     "boolean",
@@ -174,7 +174,8 @@ func (c *Client) execTx(fn func(tx *sql.Tx) error) error {
 }
 
 func (c *Client) Replace(schemaName, tableName string, tableSchema *Schema, cr *csv.Reader) (int64, error) {
-	tempTableName := uuid.NewV4().String()
+	tempTableNameUid, _ := uuid.NewV4()
+	tempTableName := tempTableNameUid.String()
 	defer c.dropTable(schemaName, tempTableName)
 
 	if err := c.createSchema(schemaName); err != nil {
